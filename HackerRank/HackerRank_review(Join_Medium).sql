@@ -1,4 +1,4 @@
-/*Basic JOIN - mediu ====*/
+/*Basic JOIN - medium ====*/
 
 /* The Report */
 SELECT CASE
