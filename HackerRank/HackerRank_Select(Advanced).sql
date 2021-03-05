@@ -42,6 +42,24 @@ FROM (SELECT
     ORDER BY name) TEMP   -- name 순으로 행번호 붙게하기 위함
 GROUP BY rownum;  -- 행별로 집계
 
+/* Binary Tree Nodes */
+-- p가 null이면 root, p에 n이 있으면 Inner, 나머지는 leaf
+SELECT N,
+    CASE
+        WHEN P IS NULL THEN 'Root'
+        WHEN N IN (SELECT DISTINCT P FROM BST) THEN 'Inner'
+    ELSE 'Leaf' END AS nodeType
+FROM BST
+ORDER BY N;
 
-
-
+/* New Companies */
+-- 중복값 제거 후 COUNT
+SELECT E.company_code, 
+        C.founder, 
+        COUNT(DISTINCT E.lead_manager_code),
+        COUNT(DISTINCT E.senior_manager_code),
+        COUNT(DISTINCT E.manager_code),
+        COUNT(DISTINCT E.employee_code)
+FROM Employee E INNER JOIN Company C ON E.company_code = C.company_code
+GROUP BY 1,2
+ORDER BY 1;
