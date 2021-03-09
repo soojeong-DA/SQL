@@ -21,5 +21,11 @@ FROM Students A INNER JOIN Friends B ON A.id = B.id
 WHERE C.salary < D.salary  -- 본인, 친구 각각의 salary
 ORDER BY D.salary;
 
-
+/* Symmetric Pairs */
+-- 주의: 현재의 x값이 다음의 y값에 있는 것을 확인하는 문제가 아니라, y값들중에 있기만 하면 되는 문제
+SELECT A.x, A.y
+FROM Functions A INNER JOIN Functions B ON A.x = B.y AND A.y = B.x   -- inner join을 통해 null(x or y값이 y or x 열에 없는 것) 제외
+GROUP BY A.x, A.y
+HAVING COUNT(*) >= 2 OR A.x < A.y  -- 2개 이상, x가 y보다 작아야함
+ORDER BY A.x;
 
