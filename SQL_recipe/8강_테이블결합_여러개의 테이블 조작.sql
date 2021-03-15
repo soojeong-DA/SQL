@@ -71,3 +71,83 @@ FROM mst_users_with_card_number m
 GROUP BY 1,2  -- GROUP BY로 묶어 마스터 테이블 레코드 수 그대로 유지
 ;
 
+/* 계산한 테이블에 이름 붙여 재사용하기(WITH구문 - 일시 테이블) */
+-- 카테고리별 상품 매출 순위
+WITH product_sale_ranking AS (
+SELECT *,
+	ROW_NUMBER() OVER(PARTITION BY category_name ORDER BY sales DESC) AS RNK
+FROM product_sales
+)
+SELECT *
+FROM product_sale_ranking
+;
+
+-- 카테고리 순위에서 unique한 순위 목록
+WITH 
+product_sale_ranking AS (
+SELECT *,
+	ROW_NUMBER() OVER(PARTITION BY category_name ORDER BY sales DESC) AS rnk
+FROM product_sales
+),
+mst_rank AS (
+SELECT DISTINCT rnk
+FROM product_sale_ranking
+)
+SELECT *
+FROM mst_rank;
+
+-- 순위별 카테고리 정보 가로로 출력
+WITH 
+product_sale_ranking AS (
+SELECT *,
+	ROW_NUMBER() OVER(PARTITION BY category_name ORDER BY sales DESC) AS rnk
+FROM product_sales
+),
+mst_rank AS (
+SELECT DISTINCT rnk
+FROM product_sale_ranking
+)
+SELECT m.rnk,
+	p1.product_id AS dvd,
+	p1.sales AS dvd_sales,
+	p2.product_id AS cd,
+	p2.sales AS cd_sales,
+	p3.product_id AS book,
+	p3.sales AS book_sales
+FROM mst_rank m 
+	LEFT JOIN product_sale_ranking p1 ON m.rnk = p1.rnk AND p1.category_name = 'dvd'
+	LEFT JOIN product_sale_ranking p2 ON m.rnk = p2.rnk AND p2.category_name = 'cd'
+	LEFT JOIN product_sale_ranking p3 ON m.rnk = p3.rnk AND p3.category_name = 'book'
+ORDER BY m.rnk;
+
+/* 유사 테이블 만들기 */
+-- (직접 정의) 임의의 레코드를 가진 유사 테이블 만들기 (UNION ALL 이용)
+WITH mst_devices AS (  --코드 값과 레이블을 가진 유사 table
+	SELECT 1 AS device_id, 'PC' AS device_name
+UNION ALL SELECT 2 AS device_id, 'SP' AS device_name
+UNION ALL SELECT 3 AS device_id, '애플리케이션' AS device_name
+) 
+-- 의사 테이블을 사용해 코드를 레이블로 변환
+SELECT u.user_id,
+	d.device_name
+FROM mst_users u
+	LEFT JOIN mst_devices d ON u.register_device = d.device_id
+;
+
+-- (직접 정의) 임의의 레코드를 가진 유사 테이블 만들기 (VALUES 이용)
+WITH 
+mst_devices(device_id, device_name) AS (  -- 열이름 지정
+VALUES
+	(1,'PC'),
+	(2,'SP'),
+	(3,'애플리케이션')
+)
+SELECT *
+FROM mst_devices;
+
+-- 순번 자동 생성 함수를 사용해 유사 테이블 만들기 (generate_series)
+WITH series AS (
+SELECT generate_series(1,5) AS idx  -- 1~5번까지 생성
+)
+SELECT *
+FROM series;
