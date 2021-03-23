@@ -230,3 +230,34 @@ GROUP BY action_day_count
 ORDER BY action_day_count
 ;
 
+/* 벤 다이어그램으로 사용자 액션 집계 
+- 여러 기능의 사용자 사용 상황을 조사할 때 쓰임 */
+
+-- 사용자들의 액션 플래그 집계 (3개 액션 purchase, review, favorite에 대해)
+SELECT user_id,
+	SIGN(SUM(CASE WHEN action='purchase' THEN 1 ELSE 0 END)) AS has_purchase,
+	SIGN(SUM(CASE WHEN action='review' THEN 1 ELSE 0 END)) AS has_review,
+	SIGN(SUM(CASE WHEN action='favorite' THEN 1 ELSE 0 END)) AS has_favorite
+FROM action_log
+GROUP BY user_id
+ORDER BY user_id;
+
+-- '모든 액션 조합'에 대한 사용자 수 집계 (CUBE 구문)
+WITH user_action_flag AS (
+	SELECT user_id,
+	SIGN(SUM(CASE WHEN action='purchase' THEN 1 ELSE 0 END)) AS has_purchase,
+	SIGN(SUM(CASE WHEN action='review' THEN 1 ELSE 0 END)) AS has_review,
+	SIGN(SUM(CASE WHEN action='favorite' THEN 1 ELSE 0 END)) AS has_favorite
+	FROM action_log
+	GROUP BY user_id
+)
+SELECT has_purchase, 
+	has_review, 
+	has_favorite,
+	COUNT(*) AS users
+FROM user_action_flag
+GROUP BY CUBE(has_purchase, has_review, has_favorite)
+ORDER BY 1,2,3
+;
+
+
