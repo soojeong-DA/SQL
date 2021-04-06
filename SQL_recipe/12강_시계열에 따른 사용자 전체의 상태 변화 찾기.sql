@@ -268,4 +268,67 @@ ORDER BY 1,2
 ;
 
 
+/* 지속과 정착에 영향을 주는 액션 집계 ==================================================
+- 해당 n일/기간 동안 사용자들이 무엇을 했는지 액션을 조사하면 알 수 있음 */
+
+-- 1. '등록일 액션 사용 여부'에 따라 '1일 지속률'에 어떤 차이가 있는지 알아보자!
+-- -- (여부에 따른 차이가 클 수록 지속률에 더 영향을 주는 액션임)
+
+-- 1-1. 모든 사용자와 액션의 조합을 도출 (CROSS JOIN 이용)
+WITH 
+repeat_interval(index_name, interval_begin_date, interval_end_date) AS (
+	VALUES ('01 day repeat', 1, 1)
+),
+action_log_with_index_date AS (
+	SELECT u.user_id,
+		u.register_date,
+		-- 액션 날짜와 로그 전체의 최신 날짜를 날짜 자료형으로 변환
+		CAST(a.stamp AS date) AS action_date,
+		MAX(CAST(a.stamp AS date)) OVER() AS latest_date,
+		r.index_name,
+		-- 지표의 대상 기간 시작일/종료일 계산
+		CAST(u.register_date::date + '1 day'::interval * r.interval_begin_date AS date) AS index_begin_date,
+		CAST(u.register_date::date + '1 day'::interval * r.interval_end_date AS date) AS index_end_date
+	FROM mst_users u 
+					LEFT OUTER JOIN action_log a ON u.user_id = a.user_id
+					CROSS JOIN repeat_interval r
+),
+user_action_flag AS (
+	SELECT user_id,
+		register_date,
+		index_name,
+		-- 4) 지표 대상 기간에 액션 했는지 flag로 나타내기
+		SIGN(
+			-- 3) 사용자별 대상 기간에 한 액션의 합계
+			SUM(
+				-- 1) 대상 기간의 종료일이 로그 최신 날짜 이전인지 확인
+				CASE WHEN index_end_date <= latest_date THEN
+					-- 2) 지표 대상 기간에 액션 했다면 1, 안했다면 0
+					CASE WHEN action_date BETWEEN index_begin_date AND index_end_date THEN 1 ELSE 0 END
+				END
+			)
+		) AS index_date_action
+	FROM action_log_with_index_date
+	GROUP BY user_id, register_date, index_name, index_begin_date, index_end_date
+),
+mst_actions AS (
+			SELECT 'view' AS action
+	UNION ALL SELECT 'comment' AS action
+	UNION ALL SELECT 'follow' AS action
+),
+mst_user_actions AS (
+	SELECT u.user_id,
+		u.register_date,
+		a.action
+	FROM mst_users u CROSS JOIN mst_actions a
+)
+SELECT *
+FROM mst_user_actions
+ORDER BY user_id, action
+;
+
+
+
+
+
 
