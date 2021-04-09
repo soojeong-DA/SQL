@@ -832,3 +832,143 @@ FROM register_action_flag
 GROUP BY index_name, dt_count
 ORDER BY index_name, dt_count
 ; -- 사용일수 기준으로 진행했지만, 서비스에 따라 게시글 개수, 게임 레벨 등으로 대상 적절히 변경해서 사용!
+
+/* 12-6. 사용자의 잔존율 집계 =================================================================*/
+-- 1. 사용자의 잔존율을 월 단위로 집계해보자
+-- 1-1. 12개월 후까지의 월을 도출하기 위한 보조 테이블 생성
+WITH
+mst_intervals(interval_month) AS (
+SELECT generate_series(1,12) 	 -- VALUES (1), (2), ... , (12)로 대체가능
+)
+SELECT *
+FROM mst_intervals
+;
+
+-- 1-2. 등록 월에서 12개월 후까지의 잔존율 집계
+WITH 
+mst_intervals(interval_month) AS (
+SELECT generate_series(1,12)
+),
+mst_users_with_index_month AS (
+	-- 사용자 마스터에 등록 월부터 12개월 후까지의 월 추가
+	SELECT u.user_id,
+		u.register_date,
+		-- 등록 월, n개월 후의 날짜, n개월 후의 월 계산
+		substring(u.register_date, 1, 7) AS register_month,   -- year_month
+		CAST(u.register_date::date + i.interval_month * '1 month'::interval AS date) AS index_date,	
+		substring(CAST(u.register_date::date + i.interval_month * '1 month'::interval AS text), 1, 7) AS index_month
+	FROM mst_users u CROSS JOIN mst_intervals i
+),
+action_log_in_month AS (
+	-- 액션 로그 날짜에서 월 부분만 추출
+	SELECT DISTINCT user_id,
+		substring(stamp, 1, 7) AS action_month
+	FROM action_log
+)
+-- 사용자 마스터와 액션 로그를 결합한 뒤, 월별 잔존율 집계
+SELECT u.register_month,
+	u.index_month,
+	-- action_month가 NULL이 아니면(액션을 했다면), 사용자 수 집계
+	SUM(CASE WHEN a.action_month IS NOT NULL THEN 1 ELSE 0 END) AS users,
+	AVG(CASE WHEN a.action_month IS NOT NULL THEN 100.0 ELSE 0.0 END) AS retension_rate
+FROM mst_users_with_index_month u LEFT JOIN action_log_in_month a ON u.user_id = a.user_id
+																	AND u.index_month = a.action_month
+GROUP BY 1,2
+ORDER BY 1,2
+;
+
+/* 12-7. 방문 빈도를 기반으로 사용자 속성을 정의하고 집계 ===============================================
+- MAU(Monthly Active Users): 특정 월에 서비스를 사용한 사용자 수  ====================================*/
+
+-- 1. 사용자의 방문 빈도를 월 단위로 파악하고, MAU를 3개로 나누어 분석해보자 (신규/리피트/컴백 사용자)
+WITH
+monthly_user_action AS (
+	-- 월별 사용자 액션 집약
+	SELECT DISTINCT u.user_id,
+		substring(u.register_date, 1, 7) AS register_month,
+		substring(a.stamp, 1, 7) AS action_month,
+		substring(CAST(a.stamp::date - '1 month'::interval AS text), 1, 7) AS action_month_priv
+	FROM mst_users u JOIN action_log a ON u.user_id = a.user_id
+),
+monthly_user_with_type AS (
+	-- 월별 사용자 분류 테이블
+	SELECT action_month,
+		user_id,
+		action_month_priv,
+		CASE
+			-- 1) 등록 월과 액션 월이 일치하면, 신규 사용자
+			WHEN register_month = action_month THEN 'new_user'
+			-- 2) 이전 월에 액션이 있다면, 리피트 사용자
+			WHEN action_month_priv = LAG(action_month) OVER(PARTITION BY user_id ORDER BY action_month) THEN 'repeat_user'
+			-- 3) 이외의 경우는 컴백 사용자
+			ELSE 'come_back_user'
+		END AS c
+	FROM monthly_user_action
+)
+SELECT action_month, 			-- 특정 월
+	COUNT(user_id) AS MAU, 		-- 특정 월의 MAU
+	-- 특정 월의 신규/리피트/컴백 사용자수
+	COUNT(CASE WHEN c = 'new_user' THEN 1 END) AS new_users,  -- ELSE는 NULL이 되어, Counting안됨
+	COUNT(CASE WHEN c = 'repeat_user' THEN 1 END) AS repeat_users,
+	COUNT(CASE WHEN c = 'come_back_user' THEN 1 END) AS come_back_users
+FROM monthly_user_with_type
+GROUP BY 1
+ORDER BY 1
+;
+
+-- 2. '리피트 사용자(repeat_uesrs)'를 추가로 3가지로 분류
+WITH
+monthly_user_action AS (
+	-- 월별 사용자 액션 집약
+	SELECT DISTINCT u.user_id,
+		substring(u.register_date, 1, 7) AS register_month,
+		substring(a.stamp, 1, 7) AS action_month,
+		substring(CAST(a.stamp::date - '1 month'::interval AS text), 1, 7) AS action_month_priv
+	FROM mst_users u JOIN action_log a ON u.user_id = a.user_id
+),
+monthly_user_with_type AS (
+	-- 월별 사용자 분류 테이블
+	SELECT action_month,
+		user_id,
+		action_month_priv,
+		CASE
+			-- 1) 등록 월과 액션 월이 일치하면, 신규 사용자
+			WHEN register_month = action_month THEN 'new_user'
+			-- 2) 이전 월에 액션이 있다면, 리피트 사용자
+			WHEN action_month_priv = LAG(action_month) OVER(PARTITION BY user_id ORDER BY action_month) THEN 'repeat_user'
+			-- 3) 이외의 경우는 컴백 사용자
+			ELSE 'come_back_user'
+		END AS c
+	FROM monthly_user_action
+),
+monthly_users AS (
+	SELECT m1.action_month,
+		COUNT(m1.uesr_id) AS MAU,
+		COUNT(CASE WHEN m1.c = 'new_user' THEN 1 END) AS new_uesrs,
+		COUNT(CASE WHEN m1.c = 'repeat_uesr' THEN 1 END) AS repeat_uesrs,
+		COUNT(CASE WHEN m1.c = 'come_back_uesr' THEN 1 END) AS come_back_uesrs,
+		-- ========================================================================
+		-- 1) 신규 리피트 사용자: 해당 월에 리피트 사용자이면서, 이전 달에 신규 사용자였던 사용자
+		-- 2) 기존 리피트 사용자: 해당 월에 리피트 사용자이면서, 이전 달에 리피트 사용자였던 사용자
+		-- 3) 컴백 리피트 사용자: 해당 월에 리피트 사용자이면서, 이전 달에 컴백 사용자였던 사용자
+		-- =========================================================================
+		COUNT(CASE WHEN m1.c = 'repeat_uesr' AND m0.c = 'new_uesr' THEN 1 END) AS new_repeat_uesrs,
+		COUNT(CASE WHEN m1.c = 'repeat_uesr' AND m0.c = 'repeat_uesr' THEN 1 END) AS continuous_repeat_uesrs,
+		COUNT(CASE WHEN m1.c = 'repeat_uesr' AND m0.c = 'come_back_uesr' THEN 1 END) AS come_back_repeat_uesrs
+	FROM 
+		-- m1: 해당 월의 사용자 분류 테이블, m0: 이전 달의 사용자 분류 테이블
+		monthly_user_with_type m1 LEFT OUTER JOIN monthly_uesr_with_type m0 ON  m1.user_id = m0.uesr_id
+																		AND m1.action_month_priv = m0.action_month
+	GROUP BY 1
+)
+SELECT *
+FROM monthly_uesrs
+ORDER BY action_month
+;
+
+
+
+
+
+
+
