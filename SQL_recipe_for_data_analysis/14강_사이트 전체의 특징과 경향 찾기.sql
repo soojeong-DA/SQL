@@ -87,3 +87,135 @@ FROM access_log_with_page_name
 GROUP BY page_name
 ORDER BY 1
 ;
+
+/* 14-3. 유입 경로별 방문 횟수, CVR 집계 
+- 유입원 판정 방법: URL 매개변수 기반 판정, 레퍼러 도메인과 랜딩 페이지를 사용한 판정 ==================================== */
+
+-- 1. 유입원별 방문 횟수 집계
+WITH
+access_log_with_parse_info AS (
+	SELECT *,
+		-- 유입원 정보 추출 (정규 표현식 이용)
+		-- *: 해당 패턴이 0개 이상 일치, [^]: ~아닌
+		substring(url from 'https?://([^/]*)') AS url_domain,  -- 우리 사이트 도메인 -> 나중에 제외
+		substring(url from 'utm_source=([^&]*)') AS url_utm_source,
+		substring(url from 'utm_medium=([^&]*)') AS url_utm_medium,
+		substring(referrer from 'https?://([^/]*)') AS referrer_domain
+	FROM access_log
+),
+access_log_with_via_info AS (
+	SELECT *,
+		ROW_NUMBER() OVER(ORDER BY stamp) AS log_id,
+		CASE
+			WHEN url_utm_source != '' AND url_utm_medium != ''
+				THEN CONCAT(url_utm_source, '-', url_utm_medium)
+			WHEN referrer_domain IN ('search.yahoo.co.jp', 'www.google.co.jp') THEN 'search'
+			WHEN referrer_domain IN ('twitter.com', 'www.facebook.com') THEN 'social'
+			ELSE 'other'
+		END AS via
+	FROM access_log_with_parse_info
+	-- referrer가 없는 경우(''), 우리 사이트 도메인(url_domain)인 경우 제외
+	WHERE COALESCE(referrer_domain, '') NOT IN ('', url_domain)
+)
+SELECT via,
+	COUNT(*) AS access_count
+FROM access_log_with_via_info
+GROUP BY via
+ORDER BY access_count DESC
+;
+
+-- 2. 유입원별 CVR(각 방문에서 구매한 비율) 집계
+WITH
+access_log_with_parse_info AS (
+	SELECT *,
+		-- 유입원 정보 추출 (정규 표현식 이용)
+		-- *: 해당 패턴이 0개 이상 일치, [^]: ~아닌
+		substring(url from 'https?://([^/]*)') AS url_domain,  -- 우리 사이트 도메인 -> 나중에 제외
+		substring(url from 'utm_source=([^&]*)') AS url_utm_source,
+		substring(url from 'utm_medium=([^&]*)') AS url_utm_medium,
+		substring(referrer from 'https?://([^/]*)') AS referrer_domain
+	FROM access_log
+),
+access_log_with_via_info AS (
+	SELECT *,
+		ROW_NUMBER() OVER(ORDER BY stamp) AS log_id,
+		CASE
+			WHEN url_utm_source != '' AND url_utm_medium != ''
+				THEN CONCAT(url_utm_source, '-', url_utm_medium)
+			WHEN referrer_domain IN ('search.yahoo.co.jp', 'www.google.co.jp') THEN 'search'
+			WHEN referrer_domain IN ('twitter.com', 'www.facebook.com') THEN 'social'
+			ELSE 'other'
+		END AS via
+	FROM access_log_with_parse_info
+	-- referrer가 없는 경우(''), 우리 사이트 도메인(url_domain)인 경우 제외
+	WHERE COALESCE(referrer_domain, '') NOT IN ('', url_domain)
+),
+access_log_with_purchase_amount AS (
+	SELECT a.log_id,
+		a.via,
+		SUM(
+			CASE 
+				WHEN p.stamp::date BETWEEN a.stamp::date AND a.stamp::date + '1 day'::interval THEN amount
+			END
+		) AS amount
+	FROM access_log_with_via_info a LEFT OUTER JOIN purchase_log p ON a.long_session = p.long_session
+	GROUP BY a.log_id, a.via
+)
+SELECT via,
+	COUNT(*) AS via_count,
+	COUNT(amount) AS conversions,
+	AVG(100.0 * SIGN(COALESCE(amount, 0))) AS CVR,  -- 1: 구매함, 0: 안함
+	SUM(COALESCE(amount, 0)) AS amount,
+	AVG(1.0 * COALESCE(amount, 0)) AS avg_amount
+FROM access_log_with_purchase_amount
+GROUP BY via
+ORDER BY cvr DESC
+;
+
+/* 14-4. 접근 요일, 시간대 파악 
+- postgresql의 요일 번호: 일요일(0) ~ 토요일(6) =============================================================*/
+
+-- 요일/시간대별 방문자 수 집계
+WITH
+access_log_with_dow AS  (
+	SELECT stamp,
+		-- 요일 번호 추출
+		date_part('dow', stamp::timestamp) AS dow,
+		-- 00:00:00부터의 경과 시간 계산 (초 단위)
+		CAST(substring(stamp, 12, 2) AS int) * 60 * 60
+		+ CAST(substring(stamp, 15, 2) AS int) * 60
+		+ CAST(substring(stamp, 18, 2) AS int) 
+		AS whole_seconds,
+		-- 집계 시간 간격 정하기 (30분 단위 = 1800초)
+		30 * 60 AS interval_seconds
+	FROM access_log
+),
+access_log_with_floor_seconds AS (
+	SELECT stamp,
+		dow,
+		-- 00:00:00부터의 경과 시간을 interval_seconds로 나누기!
+		CAST((floor(whole_seconds / interval_seconds) * interval_seconds) AS int) AS floor_seconds
+	FROM access_log_with_dow
+),
+access_log_with_index AS (
+	SELECT stamp,
+		dow,
+		-- seconds를 다시 timestamp '형식'으로 변환 (문자열 합치기)
+		lpad(floor(floor_seconds / (60 * 60))::text, 2, '0') || ':'
+			|| lpad(floor(floor_seconds % (60 * 60) / 60)::text, 2, '0') || ':'
+			|| lpad(floor(floor_seconds % 60)::text, 2, '0')
+		AS index_time
+	FROM access_log_with_floor_seconds
+)
+SELECT index_time,
+	COUNT(CASE WHEN dow = 0 THEN 1 END) AS sun,
+	COUNT(CASE WHEN dow = 1 THEN 1 END) AS mon,
+	COUNT(CASE WHEN dow = 2 THEN 1 END) AS tue,
+	COUNT(CASE WHEN dow = 3 THEN 1 END) AS wed,
+	COUNT(CASE WHEN dow = 4 THEN 1 END) AS thu,
+	COUNT(CASE WHEN dow = 5 THEN 1 END) AS fri,
+	COUNT(CASE WHEN dow = 6 THEN 1 END) AS sat
+FROM access_log_with_index
+GROUP BY index_time
+ORDER BY index_time
+;
