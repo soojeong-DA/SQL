@@ -111,7 +111,26 @@ GROUP BY 1
 ORDER BY exit_ratio DESC
 ;
 
-
-
-
+-- 2. 경로별 직귀율 집계
+-- 직귀 수 = 한 페이지만을 조회한 방문 횟수
+WITH activity_log_with_landing_bounce_flag AS (
+	SELECT *,
+		-- 입구 페이지 판정
+		CASE
+			WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) = 1 THEN 1 ELSE 0
+		END AS is_landing,
+		-- 직귀 판정
+		CASE
+			WHEN COUNT(*) OVER(PARTITION BY session) = 1 THEN 1 ELSE 0
+		END AS is_bounce
+	FROM activity_log
+)
+SELECT path,
+	SUM(is_bounce) AS bounce_count,
+	SUM(is_landing) AS landing_count,
+	AVG(100.0 * CASE WHEN is_landing = 1 THEN is_bounce END) AS bounce_ratio
+FROM activity_log_with_landing_bounce_flag
+GROUP BY 1
+ORDER BY bounce_ratio DESC
+;
 
