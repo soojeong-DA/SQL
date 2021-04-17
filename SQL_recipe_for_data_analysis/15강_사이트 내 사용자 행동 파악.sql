@@ -134,3 +134,261 @@ GROUP BY 1
 ORDER BY bounce_ratio DESC
 ;
 
+/* 15-3. 성과로 이어지는 페이지 파악 ===============================================================*/
+
+-- 1. 경로별 방문 횟수, 성과수, CVR 집계  (완료 화면에 도달하는 것을 성과(conversion)로 정의)
+-- 1-1. conversion page에 도달할 때까지의 접근 로그에 flag 추가 (complete 이후 접근 페이지, complete 미포함 세션은 0으로)
+WITH
+activity_log_with_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과를 발생시키는 conversion page의 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path = '/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																	 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_conversion
+	FROM activity_log
+)
+SELECT *
+FROM activity_log_with_conversion_flag
+ORDER BY session, stamp
+;
+
+-- 1-2. 경로별 방문 횟수, 구성 수, CVR 집계
+WITH
+activity_log_with_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과를 발생시키는 conversion page의 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path = '/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																	 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_conversion
+	FROM activity_log
+)
+SELECT path,
+	-- 방문 횟수
+	COUNT(DISTINCT session) AS sessions,
+	-- 성과 수
+	SUM(has_conversion) AS conversions,
+	-- CVR = 성과 수 / 방문 횟수
+	1.0 * SUM(has_conversion) / COUNT(DISTINCT session) AS cvr
+FROM activity_log_with_conversion_flag
+GROUP BY path
+ORDER BY cvr DESC
+;
+
+/* 15-4. 페이지 가치 산출 =====================================================================
+- 이전에 구한 방법에서 추가로 '금액'이라는 개념을 사용해 성과를 고려하는 '페이지 가치' 지표 추출 */
+
+-- 1. 페이지 가치 산출 (5가지 가치 할당 방법 모두 사용)
+---------------------------------------------------------------------------
+-- 성과 수치를 1,000으로 계산하여, 5가지 가치 할당법을 이용해 각각 계산해보자
+-- 입력, 확인, 완료 페이지는 신청(성과)할 때 무조건 거치는 페이지 -> 집계 대상에서 제외 
+---------------------------------------------------------------------------
+
+-- 1-1. 페이지 가치 할당 계산 (5가지)
+WITH
+activity_log_with_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과를 발생시키는 conversion page의 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path = '/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																	 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_conversion
+	FROM activity_log
+),
+activity_log_with_conversion_assign AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과에 이르기까지의 접근 로그를 오름차순으로 정렬해 순번 부여
+		ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) AS asc_order,
+		-- 성과에 이르기까지의 접근 수 세기 (성과 있는 flag=1 것만 사용할 예정이라 그냥 counting하면 됨)
+		COUNT(*) OVER(PARTITION BY session) AS page_count,
+		-- 1. 성과에 이르기까지의 접근 로그에 '균등'한 가치 부여
+		1000.0 / COUNT(*) OVER(PARTITION BY session) AS fair_assign,
+		-- 2. 성과에 이르기까지의 접근 로그의 '첫 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS first_assign,
+		-- 3. 성과에 이르기까지의 접근 로그의 '마지막 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS last_assign,
+		-- 4. 성과에 이르기까지의 접근 로그의 '성과 지점에서 가까운 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS decrease_assign,
+		-- 5. 성과에 이르기까지의 접근 로그의 '성과 지점에서 먼 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS increase_assign
+	FROM activity_log_with_conversion_flag
+	WHERE 
+		-- conversion으로 이어지는 session log만 추출
+		has_conversion = 1
+		-- 입력, 확인, 완료 페이지 제외
+		AND path NOT IN ('/input', '/confirm', '/complete')
+)
+SELECT *
+FROM activity_log_with_conversion_assign
+ORDER BY session, asc_order
+;
+	
+-- 1-2. 경로(path)별 페이지 가치 합계 집계
+WITH
+activity_log_with_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과를 발생시키는 conversion page의 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path = '/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																	 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_conversion
+	FROM activity_log
+),
+activity_log_with_conversion_assign AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과에 이르기까지의 접근 로그를 오름차순으로 정렬해 순번 부여
+		ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) AS asc_order,
+		-- 성과에 이르기까지의 접근 수 세기 (성과 있는 flag=1 것만 사용할 예정이라 그냥 counting하면 됨)
+		COUNT(*) OVER(PARTITION BY session) AS page_count,
+		-- 1. 성과에 이르기까지의 접근 로그에 '균등'한 가치 부여
+		1000.0 / COUNT(*) OVER(PARTITION BY session) AS fair_assign,
+		-- 2. 성과에 이르기까지의 접근 로그의 '첫 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS first_assign,
+		-- 3. 성과에 이르기까지의 접근 로그의 '마지막 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS last_assign,
+		-- 4. 성과에 이르기까지의 접근 로그의 '성과 지점에서 가까운 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS decrease_assign,
+		-- 5. 성과에 이르기까지의 접근 로그의 '성과 지점에서 먼 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS increase_assign
+	FROM activity_log_with_conversion_flag
+	WHERE 
+		-- conversion으로 이어지는 session log만 추출
+		has_conversion = 1
+		-- 입력, 확인, 완료 페이지 제외
+		AND path NOT IN ('/input', '/confirm', '/complete')
+),
+page_total_values AS (
+	-- 페이지 가치 합계 계산
+	SELECT path,
+		SUM(fair_assign) AS sum_fair,
+		SUM(first_assign) AS sum_first,
+		SUM(last_assign) AS sum_last,
+		SUM(decrease_assign) AS sum_dec,
+		SUM(increase_assign) AS sum_inc
+	FROM activity_log_with_conversion_assign
+	GROUP BY path
+)
+SELECT *
+FROM page_total_values
+;
+
+-- 1-3. 경로들의 평균 페이지 가치 계산 
+-- (페이지 뷰가 적으면서, 높은 페이지 가치를 가진 page 찾기 -> 단순히 페이지 가치를 방문 횟수 or 페이지 뷰로 나누면 됨)
+WITH
+activity_log_with_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과를 발생시키는 conversion page의 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path = '/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																	 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_conversion
+	FROM activity_log
+),
+activity_log_with_conversion_assign AS (
+	SELECT session,
+		stamp,
+		path,
+		-- 성과에 이르기까지의 접근 로그를 오름차순으로 정렬해 순번 부여
+		ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) AS asc_order,
+		-- 성과에 이르기까지의 접근 수 세기 (성과 있는 flag=1 것만 사용할 예정이라 그냥 counting하면 됨)
+		COUNT(*) OVER(PARTITION BY session) AS page_count,
+		-- 1. 성과에 이르기까지의 접근 로그에 '균등'한 가치 부여
+		1000.0 / COUNT(*) OVER(PARTITION BY session) AS fair_assign,
+		-- 2. 성과에 이르기까지의 접근 로그의 '첫 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS first_assign,
+		-- 3. 성과에 이르기까지의 접근 로그의 '마지막 페이지'에 가치 부여
+		CASE WHEN ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC) = 1 THEN 1000.0 ELSE 0.0 END
+		AS last_assign,
+		-- 4. 성과에 이르기까지의 접근 로그의 '성과 지점에서 가까운 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp ASC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS decrease_assign,
+		-- 5. 성과에 이르기까지의 접근 로그의 '성과 지점에서 먼 페이지에' 높은 가치 부여
+		1000.0 
+		* ROW_NUMBER() OVER(PARTITION BY session ORDER BY stamp DESC)
+			-- 순번 합계로 나누기(N * (N+1) / 2)  -> 성과(complete)로 갈수록 합계가 점점 커짐
+		/ ( COUNT(*) OVER(PARTITION BY session) 
+		   * COUNT(*) OVER(PARTITION BY session) + 1 
+		   / 2 )
+		AS increase_assign
+	FROM activity_log_with_conversion_flag
+	WHERE 
+		-- conversion으로 이어지는 session log만 추출
+		has_conversion = 1
+		-- 입력, 확인, 완료 페이지 제외
+		AND path NOT IN ('/input', '/confirm', '/complete')
+),
+page_total_values AS (
+	-- 페이지 가치 합계 계산
+	SELECT path,
+		SUM(fair_assign) AS sum_fair,
+		SUM(first_assign) AS sum_first,
+		SUM(last_assign) AS sum_last,
+		SUM(decrease_assign) AS sum_dec,
+		SUM(increase_assign) AS sum_inc
+	FROM activity_log_with_conversion_assign
+	GROUP BY path
+),
+page_total_cnt AS (
+	SELECT path,
+		-- 페이지 뷰 계산
+		COUNT(*) AS access_cnt
+		-- 방문 횟수 계산
+		-- COUNT(DISTINCT session) AS access_cnt
+	FROM activity_log
+	GROUP BY path
+)
+SELECT c.path,
+	c.access_cnt,
+	-- 5가지 방법별 평균 페이지 가치 산출
+	v.sum_fair / c.access_cnt AS avg_fair,
+	v.sum_first / c.access_cnt AS avg_first,
+	v.sum_last / c.access_cnt AS avg_last,
+	v.sum_dec / c.access_cnt AS avg_dec,
+	v.sum_inc / c.access_cnt AS avg_inc
+FROM page_total_cnt c INNER JOIN page_total_values v ON c.path = v.path
+ORDER BY c.access_cnt
+;
