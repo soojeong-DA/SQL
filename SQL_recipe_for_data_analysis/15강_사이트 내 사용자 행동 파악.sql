@@ -392,3 +392,94 @@ SELECT c.path,
 FROM page_total_cnt c INNER JOIN page_total_values v ON c.path = v.path
 ORDER BY c.access_cnt
 ;
+
+/* 검색 조건들의 사용자 행동 가시화 
+- 검색 조건을 더 자세하게 지정해서 사용하는 user는 동기가 명확하다는 의미 -> 성과로 이어지는 비율이 높음 
+- 하지만, 조건을 상세하게 지정하더라도 검색 결과 항목이 적거나 없으면 user가 이탈할 확률이 높아짐
+-> 검색 조건과 히트되는 항목 수의 '균형'을 고려해서 카테고리 검토/개선 해야함!! =============================================*/
+
+-- 1. 검색 타입별 CTR, CVT, 방문 횟수 집계
+-- -- (정의 - click: 상세 페이지 이동, conversion: 제출 완료)
+-- 1-1. 클릭 플래그와 컨버전 플래그 계산
+WITH
+activity_log_with_session_click_conversion_flag  AS (
+	SELECT session,
+		stamp,
+		path,
+		search_type,
+		-- 상세 페이지 ~ 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path='/detail' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_session_click,
+		-- 성과 발생 페이지 ~ 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path='/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_session_conversion
+	FROM activity_log
+)
+SELECT session,
+	stamp,
+	path,
+	search_type,
+	has_session_click AS click,
+	has_session_conversion AS cnv
+FROM activity_log_with_session_click_conversion_flag
+ORDER BY session, stamp
+;
+
+-- 1-2. 검색 타입별 CTR, CVR 집계
+WITH
+activity_log_with_session_click_conversion_flag AS (
+	SELECT session,
+		stamp,
+		path,
+		search_type,
+		-- 상세 페이지 ~ 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path='/detail' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_session_click,
+		-- 성과 발생 페이지 ~ 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path='/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_session_conversion
+	FROM activity_log
+)
+SELECT search_type,
+	COUNT(*) AS count,
+	-- Click
+	SUM(has_session_click) AS detail,
+	AVG(has_session_click) AS ctr,
+	-- Conversion
+	SUM(CASE WHEN has_session_click = 1 THEN has_session_conversion END) AS conversion,
+	AVG(CASE WHEN has_session_click = 1 THEN has_session_conversion END) AS cvr
+FROM activity_log_with_session_click_conversion_flag
+WHERE path = '/search_list'  -- 검색 조건으로 집약하니, 검색 로그만 추출
+GROUP BY search_type
+ORDER BY count DESC
+;
+
+-- 1-3. [번외] click flag를 성과 직전의 검색 결과로 한정해 다시 집계
+WITH
+activity_log_with_session_click_conversion_flag  AS (
+	SELECT session,
+		stamp,
+		path,
+		search_type,
+		-- 상세 페이지 '직전 접근'에 플래그 추가
+		CASE WHEN LAG(path) OVER(PARTITION BY session ORDER BY stamp DESC) = '/detail' THEN 1 ELSE 0 END 
+		AS has_session_click,
+		-- 성과 발생 페이지 ~ 이전 접근에 플래그 추가
+		SIGN(SUM(CASE WHEN path='/complete' THEN 1 ELSE 0 END) OVER(PARTITION BY session ORDER BY stamp DESC
+																   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+		AS has_session_conversion
+	FROM activity_log
+)
+SELECT session,
+	stamp,
+	path,
+	search_type,
+	has_session_click AS click,
+	has_session_conversion AS cnv
+FROM activity_log_with_session_click_conversion_flag
+ORDER BY session, stamp
+;
