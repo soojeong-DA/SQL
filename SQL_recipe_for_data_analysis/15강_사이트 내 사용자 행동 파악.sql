@@ -483,3 +483,164 @@ SELECT session,
 FROM activity_log_with_session_click_conversion_flag
 ORDER BY session, stamp
 ;
+
+/* 15-6. 폴아웃 리포트를 사용해 사용자 회유 가시화 ================================================================*/
+
+-- 1. 폴아웃 리포트
+-- 1-1. 폴아웃 단계 순서를 접근 로그와 결합
+WITH
+mst_fallout_step AS (
+	-- 폴아웃 단계와 경로의 마스터 테이블
+			  SELECT 1 AS step, '/' AS path
+	UNION ALL SELECT 2 AS step, '/search_list' AS path
+	UNION ALL SELECT 3 AS step, '/detail' AS path
+	UNION ALL SELECT 4 AS step, '/input' AS path
+	UNION ALL SELECT 5 AS step, '/complete' AS path
+),
+activity_log_with_fallout_step AS (
+	SELECT a.session,
+		m.step,
+		m.path,
+		-- 첫 접근과 마지막 접근 시간 구하기
+		MAX(a.stamp) AS max_stamp,
+		MIN(a.stamp) AS min_stamp
+	FROM mst_fallout_step m INNER JOIN activity_log a ON m.path = a.path
+	GROUP BY a.session, m.step, m.path
+),
+activity_log_with_mod_fallout_step AS (
+	SELECT session,
+		step,
+		path,
+		max_stamp,
+		-- 직전 단계에서의 첫 접근 시간 구하기
+		LAG(min_stamp) OVER(PARTITION BY session ORDER BY step) AS lag_min_stamp,
+		-- 세션에서의 단계 순서 최소값 구하기
+		MIN(step) OVER(PARTITION BY session) AS min_step,
+		-- 해당 단계에 도달할 때까지 걸린 단계 수 누계
+		COUNT(*) OVER(PARTITION BY session ORDER BY step ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_count
+	FROM activity_log_with_fallout_step
+)
+SELECT *
+FROM activity_log_with_mod_fallout_step
+ORDER BY session, step
+;
+
+-- 1-2. 폴아웃 리포트에 필요한 로그를 압축
+WITH
+mst_fallout_step AS (
+	-- 폴아웃 단계와 경로의 마스터 테이블
+			  SELECT 1 AS step, '/' AS path
+	UNION ALL SELECT 2 AS step, '/search_list' AS path
+	UNION ALL SELECT 3 AS step, '/detail' AS path
+	UNION ALL SELECT 4 AS step, '/input' AS path
+	UNION ALL SELECT 5 AS step, '/complete' AS path
+),
+activity_log_with_fallout_step AS (
+	SELECT a.session,
+		m.step,
+		m.path,
+		-- 첫 접근과 마지막 접근 시간 구하기
+		MAX(a.stamp) AS max_stamp,
+		MIN(a.stamp) AS min_stamp
+	FROM mst_fallout_step m INNER JOIN activity_log a ON m.path = a.path
+	GROUP BY a.session, m.step, m.path
+),
+activity_log_with_mod_fallout_step AS (
+	SELECT session,
+		step,
+		path,
+		max_stamp,
+		-- 직전 단계에서의 첫 접근 시간 구하기
+		LAG(min_stamp) OVER(PARTITION BY session ORDER BY step) AS lag_min_stamp,
+		-- 세션에서의 단계 순서 최소값 구하기
+		MIN(step) OVER(PARTITION BY session) AS min_step,
+		-- 해당 단계에 도달할 때까지 걸린 단계 수 누계
+		COUNT(*) OVER(PARTITION BY session ORDER BY step ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_count
+	FROM activity_log_with_fallout_step
+),
+fallout_log AS (
+	-- 폴아웃 리포트에 사용할 로그만 추출
+	SELECT session,
+		step,
+		path
+	FROM activity_log_with_mod_fallout_step
+	WHERE
+	-- 세션에서 단계 순서가 1인지 확인
+	min_step = 1
+	-- 현재 단계 순서가 해당 단계에 도달할 때까지의 누계 단계 수와 같은지 확인
+	AND step = cum_count
+	-- 직전 단계의 첫 접근 시간이, NULL or 현재 시간의 최종 접근 시간보다 이전인지 확인
+	AND (lag_min_stamp IS NULL OR max_stamp >= lag_min_stamp)
+)
+SELECT *
+FROM fallout_log
+ORDER BY session, step
+;
+
+-- 1-3. 폴아웃 리포트 출력 (step 순서와 url로 집약하고, 접근수와 페이지 이동률 집계)
+WITH
+mst_fallout_step AS (
+	-- 폴아웃 단계와 경로의 마스터 테이블
+			  SELECT 1 AS step, '/' AS path
+	UNION ALL SELECT 2 AS step, '/search_list' AS path
+	UNION ALL SELECT 3 AS step, '/detail' AS path
+	UNION ALL SELECT 4 AS step, '/input' AS path
+	UNION ALL SELECT 5 AS step, '/complete' AS path
+),
+activity_log_with_fallout_step AS (
+	SELECT a.session,
+		m.step,
+		m.path,
+		-- 첫 접근과 마지막 접근 시간 구하기
+		MAX(a.stamp) AS max_stamp,
+		MIN(a.stamp) AS min_stamp
+	FROM mst_fallout_step m INNER JOIN activity_log a ON m.path = a.path
+	GROUP BY a.session, m.step, m.path
+),
+activity_log_with_mod_fallout_step AS (
+	SELECT session,
+		step,
+		path,
+		max_stamp,
+		-- 직전 단계에서의 첫 접근 시간 구하기
+		LAG(min_stamp) OVER(PARTITION BY session ORDER BY step) AS lag_min_stamp,
+		-- 세션에서의 단계 순서 최소값 구하기
+		MIN(step) OVER(PARTITION BY session) AS min_step,
+		-- 해당 단계에 도달할 때까지 걸린 단계 수 누계
+		COUNT(*) OVER(PARTITION BY session ORDER BY step ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_count
+	FROM activity_log_with_fallout_step
+),
+fallout_log AS (
+	-- 폴아웃 리포트에 사용할 로그만 추출
+	SELECT session,
+		step,
+		path
+	FROM activity_log_with_mod_fallout_step
+	WHERE
+	-- 세션에서 단계 순서가 1인지 확인
+	min_step = 1
+	-- 현재 단계 순서가 해당 단계에 도달할 때까지의 누계 단계 수와 같은지 확인
+	AND step = cum_count
+	-- 직전 단계의 첫 접근 시간이, NULL or 현재 시간의 최종 접근 시간보다 이전인지 확인
+	AND (lag_min_stamp IS NULL OR max_stamp >= lag_min_stamp)
+)
+SELECT step,
+	path,
+	COUNT(*) AS count,
+	-- 단계 순서 = 1 인 url부터의 이동률
+	100.0 * COUNT(*) / FIRST_VALUE(COUNT(*)) OVER(ORDER BY step ASC 
+												 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+	AS first_trans_rate,
+	-- 직전 단계까지의 이동률
+	100.0 * COUNT(*) / LAG(COUNT(*)) OVER(ORDER BY step ASC) AS step_trans_rate
+FROM fallout_log
+GROUP BY step, path
+ORDER BY step
+;
+
+
+
+
