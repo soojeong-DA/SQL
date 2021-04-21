@@ -641,6 +641,74 @@ GROUP BY step, path
 ORDER BY step
 ;
 
+/* 15-7. 사이트 내부에서 사용자 흐름 파악 ===================================================================*/
 
+-- 1. 사용자 흐름 집계 (시작 지점 이후에 어떤 페이지로 가는지 정리. 시작 페이지 = /detail)
+-- 1-1. /detail 페이지 이후의 사용자 흐름을 집계
+WITH
+activity_log_with_lead_path AS (
+	SELECT session,
+		stamp,
+		path AS path0,
+		-- 다음 경로(페이지)1 추출
+		LEAD(path, 1) OVER(PARTITION BY session ORDER BY stamp ASC) AS path1,
+		-- 다음 경로2 추출
+		LEAD(path, 2) OVER(PARTITION BY session ORDER BY stamp ASC) AS path2
+	FROM activity_log
+),
+raw_user_flow AS (
+	SELECT path0,
+		-- 시작 지점 경로의 접근 수
+		SUM(COUNT(*)) OVER() AS count0,
+		-- 다음 경로1 (존재하지 않는 경우 문자열 NULL)
+		COALESCE(path1, 'NULL') AS path1,
+		-- 다음 경로1의 접근 수
+		SUM(COUNT(*)) OVER(PARTITION BY path0, path1) AS count1,
+		-- 다음 경로2 (존재하지 않는 경우 문자열 NULL)
+		COALESCE(path2, 'NULL') AS path2,
+		-- 다음 경로2의 접근 수
+		COUNT(*) AS count2
+	FROM activity_log_with_lead_path
+	WHERE path0 = '/detail'  -- 상세 페이지가 시작점인 것만
+	GROUP BY path0, path1, path2
+)
+SELECT path0,
+	count0,
+	path1,
+	count1,
+	100.0 * count1 / count0 AS rate1,
+	path2,
+	count2,
+	100.0 * count2 / count1 AS rate2
+FROM raw_user_flow
+ORDER BY count1 DESC, count2 DESC
+;
 
-
+-- 1-2. /detail 페이지 이후의 사용자 흐름을 집계 (바로 전의 레코드와 같은 값을 가졌을 때(중복 값) 출력하지 않게 가공)
+WITH
+activity_log_with_lead_path AS (
+	SELECT session,
+		stamp,
+		path AS path0,
+		-- 다음 경로(페이지)1 추출
+		LEAD(path, 1) OVER(PARTITION BY session ORDER BY stamp ASC) AS path1,
+		-- 다음 경로2 추출
+		LEAD(path, 2) OVER(PARTITION BY session ORDER BY stamp ASC) AS path2
+	FROM activity_log
+),
+raw_user_flow AS (
+	SELECT path0,
+		-- 시작 지점 경로의 접근 수
+		SUM(COUNT(*)) OVER() AS count0,
+		-- 다음 경로1 (존재하지 않는 경우 문자열 NULL)
+		COALESCE(path1, 'NULL') AS path1,
+		-- 다음 경로1의 접근 수
+		SUM(COUNT(*)) OVER(PARTITION BY path0, path1) AS count1,
+		-- 다음 경로2 (존재하지 않는 경우 문자열 NULL)
+		COALESCE(path2, 'NULL') AS path2,
+		-- 다음 경로2의 접근 수
+		COUNT(*) AS count2
+	FROM activity_log_with_lead_path
+	WHERE path0 = '/detail'  -- 상세 페이지가 시작점인 것만
+	GROUP BY path0, path1, path2
+)
