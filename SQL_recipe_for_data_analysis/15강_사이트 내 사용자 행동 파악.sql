@@ -643,7 +643,7 @@ ORDER BY step
 
 /* 15-7. 사이트 내부에서 사용자 흐름 파악 ===================================================================*/
 
--- 1. 사용자 흐름 집계 (시작 지점 이후에 어떤 페이지로 가는지 정리. 시작 페이지 = /detail)
+-- 1. 사용자 흐름 - 다음 페이지 집계 (시작 지점 이후에 어떤 페이지로 가는지 정리. 시작 페이지 = /detail)
 -- 1-1. /detail 페이지 이후의 사용자 흐름을 집계
 WITH
 activity_log_with_lead_path AS (
@@ -712,3 +712,101 @@ raw_user_flow AS (
 	WHERE path0 = '/detail'  -- 상세 페이지가 시작점인 것만
 	GROUP BY path0, path1, path2
 )
+SELECT
+	-- path0, count0
+	CASE
+		WHEN
+			COALESCE(
+				-- 바로 이전의 레코드가 가진 값과 다를 경우만 path0 추출 (존재하지 않을 경우 NOT FOUND 출력)
+				LAG(path0) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != path0
+		THEN path0
+	END AS path0,
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != path0
+		THEN count0
+	END AS count0,
+	-- path1, count1, rate1
+	CASE
+		WHEN
+			COALESCE(
+				-- 바로 이전의 레코드가 가진 여러 값을 추출할 수 있게, 문자열 결합 후 추출
+				LAG(path0||path1) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1)
+		THEN path1
+	END AS page1,
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0||path1) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1)
+		THEN count1
+	END AS count1,
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0||path1) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1)
+		THEN 100.0 * count1 / count0
+	END AS rate1,
+	-- path2, count2, rate2
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0||path1||path2) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1||path2)
+		THEN path2
+	END AS page2,
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0||path1||path2) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1||path2)
+		THEN count2
+	END AS count2,
+	CASE
+		WHEN
+			COALESCE(
+				LAG(path0||path1||path2) OVER(ORDER BY count1 DESC, count2 DESC), 'NOT FOUND') != (path0||path1||path2)
+		THEN 100.0 * count2 / count1
+	END AS rate2
+FROM raw_user_flow
+ORDER BY count1 DESC, count2 DESC
+;
+
+-- 2. 사용자 흐름 - 이전 페이지 집계
+-- -- 이전 페이지 집계에서의 NULL 레코드는 '이탈'의 뜻이 아님. '조회한 로그가 없다'는 뜻 = 해당 페이지로 '바로 방문'했다
+-- /detail 페이지 이전 사용자 흐름 집계
+WITH
+activity_log_with_lag_path AS (
+	SELECT session,
+		stamp,
+		path AS path0,
+		-- 바로 전에 접근한 경로1 추출 (존재하지 않는 경우 'NULL' 지정)
+		COALESCE(LAG(path, 1) OVER(PARTITION BY session ORDER BY stamp ASC), 'NULL') AS path1,
+		-- 그 전에 접근한 경로2 추출 (존재하지 않는 경우 'NULL' 지정)
+		COALESCE(LAG(path, 2) OVER(PARTITION BY session ORDER BY stamp ASC), 'NULL') AS path2
+	FROM activity_log
+),
+raw_user_flow AS (
+	SELECT path0,
+		-- 시작 지점 경로의 접근 수
+		SUM(COUNT(*)) OVER() AS count0,
+		path1,
+		-- 바로 전의 경로(1)의 접근 수
+		SUM(COUNT(*)) OVER(PARTITION BY path0, path1) AS count1,
+		path2,
+		-- 그 전에 접근한 경로(2)의  접근 수
+		COUNT(*) AS count2
+	FROM activity_log_with_lag_path
+	WHERE path0 = '/detail'  -- 시작점이 '/detail'인 것만
+	GROUP BY path0, path1, path2
+)
+SELECT path2,
+	count2,
+	100.0 * count2 / count1 AS rate2,
+	path1,
+	count1,
+	100.0 * count1 / count0 AS rate1,
+	path0,
+	count0
+FROM raw_user_flow
+ORDER BY count1 DESC, count2 DESC
+;
+	
