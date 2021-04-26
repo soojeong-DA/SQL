@@ -809,4 +809,16 @@ SELECT path2,
 FROM raw_user_flow
 ORDER BY count1 DESC, count2 DESC
 ;
-	
+
+/* 15-8. 페이지 완독률 집계
+- 사용자에게 가치를 제대로 전달했는지 확인 ================================================================*/
+
+-- 완독률 집계
+SELECT url,
+	action,
+	COUNT(*) AS count,
+	100.0 * COUNT(*) / SUM(CASE WHEN action = 'view' THEN COUNT(*) ELSE 0 END) OVER(PARTITION BY url) AS action_per_view
+FROM read_log
+GROUP BY url, action
+ORDER BY url, count DESC
+;
