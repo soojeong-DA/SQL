@@ -1,4 +1,4 @@
-/* 17. 오픈 데이터를 활용해 서비스와 결합해보기 
+/* 17. 내부 데이터를 조합해 새로운 데이터 만들기 + 오픈 데이터를 활용해 서비스와 결합해보기 
 - 외부 데이터 읽어 들이는 방법, 데이터 가공하는 방법을 알아보자! */
 
 /* 17-1. IP주소를 기반으로 국가와 지역 보완 
@@ -61,7 +61,7 @@ FROM action_log_with_ip a LEFT JOIN mst_city_ip i ON a.ip::inet << i.network
 					LEFT JOIN mst_locations l ON i.geoname_id = l.geoname_id
 ;
 
-/* 17-2. 주말과 공휴일 판정 ========================================================================= */
+/* 17-2. 주말과 공휴일 판정 ============================================================================== */
 
 -- 주말, 공휴일 판정
 SELECT a.action,
@@ -77,5 +77,25 @@ FROM access_log a INNER JOIN mst_calender c
 					AND CAST(substring(a.stamp, 9, 2) AS int) = c.day
 ;	
 
+/* 17-3. 하루 집계 범위 변경 ============================================================================
+- 대부분의 서비스는 자정 전후의 사용 비율이 상당히 많음
+- 이를 자정 0시 기준으로 다른 날짜로 구분하게되면, 사용자의 행동을 파악하기 어려울 수도
+--> 오전 4시 ~ 다음 날 오전 3시 59분 59초까지를 '하루' 집계 범위로 설정! =====================================*/
 
-
+-- 날짜 집계 범위를 오전 4시부터로 변경
+WITH
+action_log_with_mod_stamp AS (
+	SELECT *,
+		-- 4시간 전의 timestamp 계산
+		CAST(stamp::timestamp - '4 hours'::interval AS text) AS mod_stamp
+	FROM action_log
+)
+SELECT session,
+	user_id,
+	action,
+	stamp,
+	-- 원래 timestamp(raw_date), 4시간 전 날짜를 나타내는 timestamp(mod_date) 추출
+	substring(stamp, 1, 10) AS raw_date,
+	substring(mod_stamp, 1, 10) AS mod_date
+FROM action_log_with_mod_stamp
+;
