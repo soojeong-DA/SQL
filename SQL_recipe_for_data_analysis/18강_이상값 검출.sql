@@ -109,3 +109,44 @@ FROM filtered_action_log
 GROUP BY user_agent
 ORDER BY count DESC
 ;
+
+/* 18-3. 데이터 타당성 확인 =============================================================================== */
+
+-- 1. 로그 데이터의 액션별 필수 컬럼 존재 여부에 따른 판정
+SELECT action,
+	-- session은 NULL이 아니여야 함
+	AVG(CASE WHEN session IS NOT NULL THEN 1.0 ELSE 0.0 END) AS session,
+	-- user_id는 NULL이 아니여야 함
+	AVG(CASE WHEN user_id IS NOT NULL THEN 1.0 ELSE 0.0 END) AS user_id,
+	-- category는 action=view일 경우 NULL, 이외의 경우 NOT NULL
+	AVG(
+		CASE action 
+			WHEN 'view' THEN 
+				CASE WHEN category IS NULL THEN 1.0 ELSE 0.0 END
+			ELSE
+				CASE WHEN category IS NOT NULL THEN 1.0 ELSE 0.0 END
+		END
+	) AS category,
+	-- products는 action=view일 경우 NULL, 이외의 경우 NOT NULL
+	AVG(
+		CASE action 
+			WHEN 'view' THEN 
+				CASE WHEN products IS NULL THEN 1.0 ELSE 0.0 END
+			ELSE
+				CASE WHEN products IS NOT NULL THEN 1.0 ELSE 0.0 END
+		END
+	) AS products,
+	-- amount는 action='purchase'의 경우 NOT NULL, 이외의 경우는 NULL
+	AVG(
+		CASE action 
+			WHEN 'purchase' THEN 
+				CASE WHEN amount IS NOT NULL THEN 1.0 ELSE 0.0 END
+			ELSE
+				CASE WHEN amount IS NULL THEN 1.0 ELSE 0.0 END
+		END
+	) AS amount,
+	-- stamp는 NOT NULL
+	AVG(CASE WHEN stamp IS NOT NULL THEN 1.0 ELSE 0.0 END) AS stamp
+FROM invalid_action_log
+GROUP BY action
+;
