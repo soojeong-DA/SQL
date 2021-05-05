@@ -150,3 +150,63 @@ SELECT action,
 FROM invalid_action_log
 GROUP BY action
 ;
+
+/* 18-4. 특정 IP 주소에서의 접근 제외 
+- IP주소를 기반으로 정규 서비스 사용자 이외의 테스트 사용자, 사내 접근 등을 판별해보자 =========================================*/
+
+-- 1. 특정 IP 주소 제외
+-- 1-1. 제외 대상 IP 주소를 정의한 master table
+WITH
+mst_reserved_ip AS (
+			  SELECT '127.0.0.0/8' AS network,	'localhost' AS description
+	UNION ALL SELECT '10.0.0.0/8' AS network,	'Private network' AS description
+	UNION ALL SELECT '172.16.0.0/12' AS network, 'Private network' AS description
+	UNION ALL SELECT '192.0.0.0/24' AS network,	'Private network' AS description
+	UNION ALL SELECT '192.168.0.0/16' AS network, 'Private network' AS description
+)
+SELECT *
+FROM mst_reserved_ip
+;
+
+-- 1-2. inet 자료형을 사용해 IP 주소 판정
+WITH
+mst_reserved_ip AS (
+			  SELECT '127.0.0.0/8' AS network,	'localhost' AS description
+	UNION ALL SELECT '10.0.0.0/8' AS network,	'Private network' AS description
+	UNION ALL SELECT '172.16.0.0/12' AS network, 'Private network' AS description
+	UNION ALL SELECT '192.0.0.0/24' AS network,	'Private network' AS description
+	UNION ALL SELECT '192.168.0.0/16' AS network, 'Private network' AS description
+)
+, action_log_with_reserved_ip AS (
+	SELECT a.user_id,
+		a.ip,
+		a.stamp,
+		m.network,
+		m.description
+	FROM action_log_with_ip a LEFT JOIN mst_reserved_ip m ON a.ip::inet << m.network::inet
+)
+SELECT *
+FROM action_log_with_reserved_ip
+;
+
+-- 1-3. 제외 대상 IP 주소의 로그를 제외
+WITH
+mst_reserved_ip AS (
+			  SELECT '127.0.0.0/8' AS network,	'localhost' AS description
+	UNION ALL SELECT '10.0.0.0/8' AS network,	'Private network' AS description
+	UNION ALL SELECT '172.16.0.0/12' AS network, 'Private network' AS description
+	UNION ALL SELECT '192.0.0.0/24' AS network,	'Private network' AS description
+	UNION ALL SELECT '192.168.0.0/16' AS network, 'Private network' AS description
+)
+, action_log_with_reserved_ip AS (
+	SELECT a.user_id,
+		a.ip,
+		a.stamp,
+		m.network,
+		m.description
+	FROM action_log_with_ip a LEFT JOIN mst_reserved_ip m ON a.ip::inet << m.network::inet
+)
+SELECT *
+FROM action_log_with_reserved_ip
+WHERE network IS NULL
+;
