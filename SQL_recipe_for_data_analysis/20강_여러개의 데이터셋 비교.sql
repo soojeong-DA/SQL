@@ -1,4 +1,4 @@
-/* 19-1. 데이터의 차이 추출 
+/* 20-1. 데이터의 차이 추출 
 - 같은 데이터라도 분석 시점에 따라 데이터의 내용이 달라짐
 - 다른 시점 데이터 비교해서, 추가/변경이 없는지, 삭제/결손이 없는지 등 확인해야!============================================ */
 
@@ -45,4 +45,133 @@ SELECT COALESCE(new_mst.product_id, old_mst.product_id) AS product_id,
 FROM mst_products_20170101 new_mst FULL OUTER JOIN mst_products_20161201 old_mst
 										ON new_mst.product_id = old_mst.product_id
 WHERE new_mst.updated_at IS DISTINCT FROM old_mst.updated_at
+;
+
+/* 20-2. 두 순위의 유사도 계산
+- 순위들의 유사도를 계산하여, 순위를 정량적으로 평가하는 방법을 알아보자
+- '방문 횟수', '방문자 수', '페이지 뷰' 3개 지표 각각의 순위를 구한 뒤, 두 지표의 순위의 연관성 정도 계산 ======================= */
+
+-- 1. 3개 지표별 순위 집계
+WITH
+path_stat AS (
+	-- path별 방문 횟수, 방문자 수, 페이지 뷰 계산
+	SELECT path,
+		COUNT(DISTINCT long_session) AS access_user,
+		COUNT(DISTINCT short_session) AS access_count,
+		COUNT(*) AS page_view
+	FROM access_log
+	GROUP BY path
+),
+path_ranking AS (
+	-- 방문 횟수, 방문자 수, 페이지 뷰별로 순위 부여
+	SELECT 'access_user' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_user DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'access_count' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_count DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'page_view' AS type, 
+		path,
+		RANK() OVER(ORDER BY page_view DESC) AS rank
+	FROM path_stat
+)
+SELECT *
+FROM path_ranking
+ORDER BY type, rank
+;
+
+-- 2. 경로별 순위 차이 계산 (diff: 두 순위 차이의 제곱)
+WITH
+path_stat AS (
+	-- path별 방문 횟수, 방문자 수, 페이지 뷰 계산
+	SELECT path,
+		COUNT(DISTINCT long_session) AS access_user,
+		COUNT(DISTINCT short_session) AS access_count,
+		COUNT(*) AS page_view
+	FROM access_log
+	GROUP BY path
+),
+path_ranking AS (
+	-- 방문 횟수, 방문자 수, 페이지 뷰별로 순위 부여
+	SELECT 'access_user' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_user DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'access_count' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_count DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'page_view' AS type, 
+		path,
+		RANK() OVER(ORDER BY page_view DESC) AS rank
+	FROM path_stat
+),
+pair_ranking AS (
+	SELECT r1.path,
+		r1.type AS type1,
+		r1.rank AS rank1,
+		r2.type AS type2,
+		r2.rank AS rank2,
+		-- 순위 차이 계산(차이의 제곱)
+		POWER(r1.rank - r2.rank, 2) AS diff
+	FROM path_ranking r1 INNER JOIN path_ranking r2 ON r1.path = r2.path  --- self join
+)
+SELECT *
+FROM pair_ranking
+ORDER BY type1, type2, rank1
+;
+
+-- 3. 스피어만 상관계수로 지표간 순위의 유사도 계산
+-- --  1.0: 두 개의 순위가 완전히 일치할 경우, -1.0: 완전히 일치하지 않을 경우
+--> 스피어만 상관계수 활용 일번적인 예시) 성적을 기반으로 과목의 유사성 측정할 때 ex. '수학 성적이 높은 학생은 영어 성적이 높을까?'  
+--> 해당 예제 순위 기반으로 지표의 유사성 측정 ex. 'access_user 순위가 높으면, page_view 순위가 높을까?'
+WITH
+path_stat AS (
+	-- path별 방문 횟수, 방문자 수, 페이지 뷰 계산
+	SELECT path,
+		COUNT(DISTINCT long_session) AS access_user,
+		COUNT(DISTINCT short_session) AS access_count,
+		COUNT(*) AS page_view
+	FROM access_log
+	GROUP BY path
+),
+path_ranking AS (
+	-- 방문 횟수, 방문자 수, 페이지 뷰별로 순위 부여
+	SELECT 'access_user' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_user DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'access_count' AS type, 
+		path,
+		RANK() OVER(ORDER BY access_count DESC) AS rank
+	FROM path_stat
+	UNION ALL
+	SELECT 'page_view' AS type, 
+		path,
+		RANK() OVER(ORDER BY page_view DESC) AS rank
+	FROM path_stat
+),
+pair_ranking AS (
+	SELECT r1.path,
+		r1.type AS type1,
+		r1.rank AS rank1,
+		r2.type AS type2,
+		r2.rank AS rank2,
+		-- 순위 차이 계산(차이의 제곱)
+		POWER(r1.rank - r2.rank, 2) AS diff
+	FROM path_ranking r1 INNER JOIN path_ranking r2 ON r1.path = r2.path  --- self join
+)
+SELECT type1,
+	type2,
+	1 - (6.0 * SUM(diff) / (POWER(COUNT(1), 3) - COUNT(1))) AS spearman
+FROM pair_ranking
+GROUP BY type1, type2
+ORDER BY type1, spearman DESC
 ;
