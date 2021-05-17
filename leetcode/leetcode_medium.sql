@@ -35,3 +35,15 @@ FROM (SELECT d.name AS Department,
     ) A 
 WHERE rnk = 1
 ;
+
+/* 626. Exchange Seats  */
+SELECT 
+    CASE
+        WHEN id % 2 = 0 THEN id - 1
+        WHEN id % 2 != 0 AND id != cnt.counts THEN id + 1
+        ELSE id
+    END AS id,
+    student 
+FROM seat, (SELECT COUNT(*) AS counts FROM seat) cnt  -- 전체 row 개수 cross join
+ORDER BY id
+;
