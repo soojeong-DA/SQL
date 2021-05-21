@@ -187,3 +187,55 @@ AND next_keyword NOT LIKE CONCAT('%', keyword, '%')   -- 다음 검색 키워드
 GROUP BY keyword, result_num, next_keyword, next_result_num
 ;
 
+/* 21-4. 검색 이탈 비율과 키워드 집계 
+- 검색 결과가 출력된 이후, 어떠한 액션도 취하지 않고 이탈한 사용자 => 결과에 만족하지 못한 경우 =========================== */
+
+-- 검색 이탈 비율 집계
+WITH
+access_log_with_next_action AS (
+	SELECT stamp,
+		session,
+		action,
+		LEAD(action) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_action
+	FROM access_log
+)
+SELECT substring(stamp::text, 1, 10) AS dt,
+	COUNT(*) AS search_count,
+	SUM(CASE WHEN next_action IS NULL THEN 1 ELSE 0 END) AS exit_count,
+	AVG(CASE WHEN next_action IS NULL THEN 1.0 ELSE 0.0 END) AS exit_rate
+FROM access_log_with_next_action
+WHERE action = 'search'
+GROUP BY dt
+ORDER BY dt
+;
+
+-- 검색 이탈 키워드 집계 (동의어 사전 추가 등의 조치를 취해 검색을 개선할 수 있음)
+WITH
+access_log_with_next_search AS (
+	SELECT stamp,
+		session,
+		action,
+		keyword,
+		result_num,
+		-- 다음 행의 액션, 키워드, 검색 결과 수 추출
+		LEAD(action) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_action,
+		LEAD(keyword) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_keyword,
+		LEAD(result_num) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_result_num
+	FROM access_log
+)
+SELECT keyword,
+	COUNT(*) AS search_count,
+	SUM(CASE WHEN next_action IS NULL THEN 1 ELSE 0 END) AS exit_count,
+	AVG(CASE WHEN next_action IS NULL THEN 1.0 ELSE 0.0 END) AS exit_rate,
+	result_num
+FROM access_log_with_next_search
+WHERE action = 'search'
+GROUP BY keyword, result_num
+HAVING SUM(CASE WHEN next_action IS NULL THEN 1 ELSE 0 END) > 0   -- 이탈률이 0보다 큰 키워드만 추출
+;
+
+
+
+
+
+
