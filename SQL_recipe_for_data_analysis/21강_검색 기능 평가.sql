@@ -234,8 +234,28 @@ GROUP BY keyword, result_num
 HAVING SUM(CASE WHEN next_action IS NULL THEN 1 ELSE 0 END) > 0   -- 이탈률이 0보다 큰 키워드만 추출
 ;
 
-
-
-
-
+/* 21-5. 검색 키워드 관련 지표의 집계 효율화 ====================================================================== */
+-- 검색과 관련된 지표 집계 효율화를 위해 중간 데이터 생성
+WITH
+access_log_with_next_search AS (
+	SELECT stamp,
+		session,
+		action,
+		keyword,
+		result_num,
+		-- 다음 행의 액션, 키워드, 검색 결과 수 추출
+		LEAD(action) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_action,
+		LEAD(keyword) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_keyword,
+		LEAD(result_num) OVER(PARTITION BY session ORDER BY stamp ASC) AS next_result_num
+	FROM access_log
+),
+search_log_with_next_action AS (
+	SELECT * 
+	FROM access_log_with_next_search
+	WHERE action = 'search'
+)
+SELECT *
+FROM search_log_with_next_action
+ORDER BY session, stamp
+;
 
