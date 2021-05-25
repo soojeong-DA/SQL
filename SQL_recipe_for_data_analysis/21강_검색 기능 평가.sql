@@ -259,7 +259,7 @@ FROM search_log_with_next_action
 ORDER BY session, stamp
 ;
 
-/* 21-6. 검색 결과의 포괄성 지표화
+/* 21-6. 검색 결과의 "포괄성" 지표화
 - 사용자 검색 로그가 아닌, 검색 키워드에 대한 지표를 사용해 검색 엔진 자체의 정밀도를 평가해보자 ================================== */
 
 -- 1. 재현율(Recall)을 사용해 검색의 포괄성 평가
@@ -390,3 +390,126 @@ SELECT AVG(recall) AS average_recall_at_5
 FROM recall_over_rank_5
 WHERE desc_number = 1
 ;
+
+/* 21-7. 검색 결과의 "타당성" 지표화 ===================================================================== */
+
+-- 1. 정확률(Precision)을 사용해 검색의 타당성 평가
+-- -- 정확률(정밀도): 검색 결과에 포함되는 아이템 중 정답 아이템이 어느 정도 비율로 포함되는지
+-- -- 앞서 구한 재현율과는 비슷하나, 분모가 다름(n순위까지의 누계 item 수)
+WITH
+search_result_with_correct_items AS (
+	SELECT COALESCE(r.keyword, c.keyword) AS keyword,
+		r.rank,
+		COALESCE(r.item, c.item) AS item,
+		CASE WHEN c.item IS NOT NULL THEN 1 ELSE 0 END AS correct
+	FROM search_result r FULL OUTER JOIN correct_result c ON r.keyword = c.keyword AND r.item = c.item
+)
+,search_result_with_precision AS (
+	SELECT *,
+		-- 검색 결과 상위에서 정답 데이터에 포함되는 아이템 수의 누계 구하기
+		SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+						 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_correct,
+		CASE
+			-- 검색 결과에 포함되지 않은 아이템은 편의상 0으로
+			WHEN rank IS NULL THEN 0.0
+			ELSE 100.0 
+				* SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+								   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+				-- 재현율과는 달리, 분모에 검색 결과 순위까지의 누계 아이템 수 지정
+				/ COUNT(*) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+							   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		END AS precision
+	FROM search_result_with_correct_items
+)
+SELECT *
+FROM search_result_with_precision
+ORDER BY keyword, rank
+;
+
+-- 2. 정확률 값을 집약해서 비교하기 쉽게 만들기 
+-- 2-1. 검색 결과 상위 5개의 정확률을 키워드별로 추출
+WITH
+search_result_with_correct_items AS (
+	SELECT COALESCE(r.keyword, c.keyword) AS keyword,
+		r.rank,
+		COALESCE(r.item, c.item) AS item,
+		CASE WHEN c.item IS NOT NULL THEN 1 ELSE 0 END AS correct
+	FROM search_result r FULL OUTER JOIN correct_result c ON r.keyword = c.keyword AND r.item = c.item
+)
+,search_result_with_precision AS (
+	SELECT *,
+		-- 검색 결과 상위에서 정답 데이터에 포함되는 아이템 수의 누계 구하기
+		SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+						 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_correct,
+		CASE
+			-- 검색 결과에 포함되지 않은 아이템은 편의상 0으로
+			WHEN rank IS NULL THEN 0.0
+			ELSE 100.0 
+				* SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+								   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+				-- 재현율과는 달리, 분모에 검색 결과 순위까지의 누계 아이템 수 지정
+				/ COUNT(*) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+							   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		END AS precision
+	FROM search_result_with_correct_items
+)
+, precision_over_rank_5 AS (
+	SELECT keyword,
+		rank,
+		precision,
+		-- 검색 결과 순위가 높은 순서로 번호 붙이기 (결과에 나오지 않는 것은 0으로)
+		ROW_NUMBER() OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 0) DESC)
+		AS desc_number
+	FROM search_result_with_precision
+	WHERE COALESCE(rank,0) <= 5  -- 검색 결과 상위 5개 이하 or 검색 결과에 포함되지 않는 item만
+)
+SELECT keyword,
+	precision AS precision_at_5
+FROM precision_over_rank_5
+WHERE desc_number = 1
+;
+
+-- 2-2. 검색 엔진 전체의 평균 정확률 계산
+WITH
+search_result_with_correct_items AS (
+	SELECT COALESCE(r.keyword, c.keyword) AS keyword,
+		r.rank,
+		COALESCE(r.item, c.item) AS item,
+		CASE WHEN c.item IS NOT NULL THEN 1 ELSE 0 END AS correct
+	FROM search_result r FULL OUTER JOIN correct_result c ON r.keyword = c.keyword AND r.item = c.item
+)
+,search_result_with_precision AS (
+	SELECT *,
+		-- 검색 결과 상위에서 정답 데이터에 포함되는 아이템 수의 누계 구하기
+		SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+						 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		AS cum_correct,
+		CASE
+			-- 검색 결과에 포함되지 않은 아이템은 편의상 0으로
+			WHEN rank IS NULL THEN 0.0
+			ELSE 100.0 
+				* SUM(correct) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+								   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+				-- 재현율과는 달리, 분모에 검색 결과 순위까지의 누계 아이템 수 지정
+				/ COUNT(*) OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 100000) ASC
+							   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+		END AS precision
+	FROM search_result_with_correct_items
+)
+, precision_over_rank_5 AS (
+	SELECT keyword,
+		rank,
+		precision,
+		-- 검색 결과 순위가 높은 순서로 번호 붙이기 (결과에 나오지 않는 것은 0으로)
+		ROW_NUMBER() OVER(PARTITION BY keyword ORDER BY COALESCE(rank, 0) DESC)
+		AS desc_number
+	FROM search_result_with_precision
+	WHERE COALESCE(rank,0) <= 5  -- 검색 결과 상위 5개 이하 or 검색 결과에 포함되지 않는 item만
+)
+SELECT AVG(precision) AS average_precision_at_5
+FROM precision_over_rank_5
+WHERE desc_number = 1
+;
+
