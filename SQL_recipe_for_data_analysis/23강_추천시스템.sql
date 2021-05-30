@@ -158,3 +158,161 @@ ORDER BY target, rank
 -- 벡터 정규화 score
 --> 1: 완전 일치하는 아이템, 최댓값
 --> 0: 전혀 유사성이 없는 아이템
+
+/* 23-2. (User to Item) 사용자 정보 기반으로 흥미/기호를 유추하고, 아이템 추천하기 ============================================ 
+- 사용자와 관련된 추천이므로 웹사이트 최상위 페이지, 사용자의 마이 페이지, 검색 결과가 나오지 않았을 경우 출력하는 페이지, 
+	메일 매거진, 푸시 통지 등 다양한 상황에 활용 가능
+- 방법: 사용자와 사용자의 유사도를 계산하고, 유사 사용자가 흥미를 가진 아이템 구하면 됨 ========================================== */
+
+-- 1. 사용자끼리의 유사도 계산
+WITH
+ratings AS (
+	SELECT user_id,
+		product,
+		-- 상품 열람 수 
+		SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END) AS view_count,
+		-- 상품 구매 수
+		SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END) AS purchase_count,
+		-- 열람 수와 구매 수에 3:7 비율의 가중치를 주어 평균 구하기
+		0.3 * SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END)
+		+ 0.7 * SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END)
+		AS score
+	FROM action_log
+	GROUP BY 1,2
+)
+, user_base_normalized_ratings AS (
+	-- 사용자 벡터 정규화
+	SELECT user_id,
+		product,
+		score,
+		-- 사용자별 벡터 노름 계산
+		SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm,
+		score / SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm_score
+	FROM ratings
+)
+, related_users AS (
+	-- 경향이 비슷한 사용자 찾기
+	SELECT r1.user_id,
+		r2.user_id AS related_user,
+		COUNT(r1.product) AS products,
+		SUM(r1.norm_score * r2.norm_score) AS score,
+		ROW_NUMBER() OVER(PARTITION BY r1.user_id ORDER BY SUM(r1.norm_score * r2.norm_score) DESC) AS rank
+	FROM user_base_normalized_ratings r1 INNER JOIN user_base_normalized_ratings r2 
+											ON r1.product = r2.product   -- 같은 상품 산 사람들 끼리
+	WHERE r1.user_id != r2.user_id  -- 자기 자신과의 조합 제외
+	GROUP BY r1.user_id, r2.user_id
+)
+SELECT *
+FROM related_users
+ORDER BY user_id, rank
+;
+
+-- 2. '순위가 높은' 유사 사용자를 기반으로 추천 아이템을 추출
+WITH
+ratings AS (
+	SELECT user_id,
+		product,
+		-- 상품 열람 수 
+		SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END) AS view_count,
+		-- 상품 구매 수
+		SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END) AS purchase_count,
+		-- 열람 수와 구매 수에 3:7 비율의 가중치를 주어 평균 구하기
+		0.3 * SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END)
+		+ 0.7 * SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END)
+		AS score
+	FROM action_log
+	GROUP BY 1,2
+)
+, user_base_normalized_ratings AS (
+	-- 사용자 벡터 정규화
+	SELECT user_id,
+		product,
+		score,
+		-- 사용자별 벡터 노름 계산
+		SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm,
+		score / SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm_score
+	FROM ratings
+)
+, related_users AS (
+	-- 경향이 비슷한 사용자 찾기
+	SELECT r1.user_id,
+		r2.user_id AS related_user,
+		COUNT(r1.product) AS products,
+		SUM(r1.norm_score * r2.norm_score) AS score,
+		ROW_NUMBER() OVER(PARTITION BY r1.user_id ORDER BY SUM(r1.norm_score * r2.norm_score) DESC) AS rank
+	FROM user_base_normalized_ratings r1 INNER JOIN user_base_normalized_ratings r2 
+											ON r1.product = r2.product   -- 같은 상품 산 사람들 끼리
+	WHERE r1.user_id != r2.user_id  -- 자기 자신과의 조합 제외
+	GROUP BY r1.user_id, r2.user_id
+)
+, related_user_base_products AS (
+	SELECT u.user_id,
+		r.product,
+		SUM(u.score * r.score) AS score,
+		ROW_NUMBER() OVER(PARTITION BY u.user_id ORDER BY SUM(u.score * r.score) DESC) AS rank
+	FROM related_users u INNER JOIN ratings r ON u.related_user = r.user_id
+	WHERE u.rank <= 1
+	GROUP BY u.user_id, r.product
+)
+SELECT *
+FROM related_user_base_products
+ORDER BY user_id
+;
+
+-- 3. 사용자가 이미 구매한 아이템은 제외(필터링)
+WITH
+ratings AS (
+	SELECT user_id,
+		product,
+		-- 상품 열람 수 
+		SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END) AS view_count,
+		-- 상품 구매 수
+		SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END) AS purchase_count,
+		-- 열람 수와 구매 수에 3:7 비율의 가중치를 주어 평균 구하기
+		0.3 * SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END)
+		+ 0.7 * SUM(CASE WHEN action = 'purchase' THEN 1 ELSE 0 END)
+		AS score
+	FROM action_log
+	GROUP BY 1,2
+)
+, user_base_normalized_ratings AS (
+	-- 사용자 벡터 정규화
+	SELECT user_id,
+		product,
+		score,
+		-- 사용자별 벡터 노름 계산
+		SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm,
+		score / SQRT(SUM(score * score) OVER(PARTITION BY user_id)) AS norm_score
+	FROM ratings
+)
+, related_users AS (
+	-- 경향이 비슷한 사용자 찾기
+	SELECT r1.user_id,
+		r2.user_id AS related_user,
+		COUNT(r1.product) AS products,
+		SUM(r1.norm_score * r2.norm_score) AS score,
+		ROW_NUMBER() OVER(PARTITION BY r1.user_id ORDER BY SUM(r1.norm_score * r2.norm_score) DESC) AS rank
+	FROM user_base_normalized_ratings r1 INNER JOIN user_base_normalized_ratings r2 
+											ON r1.product = r2.product   -- 같은 상품 산 사람들 끼리
+	WHERE r1.user_id != r2.user_id  -- 자기 자신과의 조합 제외
+	GROUP BY r1.user_id, r2.user_id
+)
+, related_user_base_products AS (
+	SELECT u.user_id,
+		r.product,
+		SUM(u.score * r.score) AS score,
+		ROW_NUMBER() OVER(PARTITION BY u.user_id ORDER BY SUM(u.score * r.score) DESC) AS rank
+	FROM related_users u INNER JOIN ratings r ON u.related_user = r.user_id
+	WHERE u.rank <= 1
+	GROUP BY u.user_id, r.product
+)
+SELECT p.user_id,
+	p.product,
+	p.score,
+	ROW_NUMBER() OVER(PARTITION BY p.user_id ORDER BY p.score DESC) AS rank
+FROM related_user_base_products p LEFT JOIN ratings r 
+									ON p.user_id = r.user_id
+									AND p.product = r.product
+WHERE COALESCE(r.purchase_count, 0) = 0  -- 대상 사용자가 구매하지 않은 상품만  (null인 경우도 0으로 대체)
+ORDER BY p.user_id
+;
